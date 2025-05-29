@@ -33,8 +33,9 @@ cfm@tuwien.ac.at
 Dept. of Signal Processing and Acoustics, Aalto University, Finland  
 esa.ollila@aalto.fi  
 
-[Peter Gerstoft](https://scholar.google.com/citations?user=oLMfDnYAAAAJ&hl=en) & [Yongsung Park](https://scholar.google.com/citations?user=kYGe18EAAAAJ&hl=en&oi=ao)  
+[Peter Gerstoft](https://scholar.google.com/citations?user=oLMfDnYAAAAJ&hl=en) & [Yongsung Park](https://scholar.google.com/citations?user=jcMeNjMAAAAJ&hl=en&oi=ao)  
 MPL/SIO/UCSD  
+AOPE/WHOI  
 gerstoft@ucsd.edu  
-yongsungpark@ucsd.edu  
+yongsung.park@whoi.edu  
 ## [Noiselab](http://noiselab.ucsd.edu/)
