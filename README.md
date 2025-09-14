@@ -6,4 +6,4 @@ if your'e interested in the actual algorithm and\or the original repository i su
 https://github.com/ysparkwin/RobustSBL
 
 or read the original paper:
-https://arxiv.org/pdf/2301.06213
+https://arxiv.org/abs/2301.06213
