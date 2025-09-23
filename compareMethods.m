@@ -215,7 +215,7 @@ end
 close(hWait);
 
 
-% ---------------- Plot Results ---------------- %
+%% ---------------- Plot Results ---------------- %%
 figure;
 nRows = numel(D_list);
 nCols = numel(noise_type);
@@ -449,5 +449,7 @@ grid on;
 hold off;
 
 %%
+true_DOAs = [-60, 25];
+
 snr_list = -21:3:21;
 interactive_gui(snr_list, true_DOAs, theta_grid, A, A_true, K, M)
