@@ -71,33 +71,34 @@ for si=1:S
     % --- SBL (full spectrum) ---
     [~,reportG]  = SBL_v5p12(A_grid,X,'SBL-G',inf,opts,errorDOApeak,errorDOAsepP);
     P_sbl = reportG.results.final_iteration.gamma;
-    Pdb{1,4}(si,:) = 10*log10(max(P_sbl(:).',1e-16)); % treat as "SCM+SBL"
+    Pdb{1,4}(si,:) = 10*log10(max(P_sbl(:).',1e-16));
 
-    [~,reportH]  = SBL_v5p12(A_grid, X, 'SBL-H', 0.9, opts, errorDOApeak, errorDOAsepP);
+    [~,reportH]  = SBL_v5p12(A_grid, X, 'SBL-H', 0.9, opts, errorDOApeak,errorDOAsepP);
     P_sbl = reportH.results.final_iteration.gamma;
-    Pdb{2,4}(si,:) = 10*log10(max(P_sbl(:).',1e-16)); % treat as "SCM+SBL"
+    Pdb{2,4}(si,:) = 10*log10(max(P_sbl(:).',1e-16));
 
-    [~,reportTyl]  = SBL_v5p12(A_grid, X, 'SBL-Tyl', M, opts, errorDOApeak, errorDOAsepP);
+    [~,reportTyl] = SBL_v5p12(A_grid, X, 'SBL-Tyl', M, opts, errorDOApeak,errorDOAsepP);
     P_sbl = reportTyl.results.final_iteration.gamma;
-    Pdb{3,4}(si,:) = 10*log10(max(P_sbl(:).',1e-16)); % treat as "SCM+SBL"
+    Pdb{3,4}(si,:) = 10*log10(max(P_sbl(:).',1e-16));
 
-    [~,reportT]  = SBL_v5p12(A_grid, X, 'SBL-T', 2.1, opts, errorDOApeak, errorDOAsepP);
+    [~,reportT]  = SBL_v5p12(A_grid, X, 'SBL-T', 2.1, opts, errorDOApeak,errorDOAsepP);
     P_sbl = reportT.results.final_iteration.gamma;
-    Pdb{4,4}(si,:) = 10*log10(max(P_sbl(:).',1e-16)); % treat as "SCM+SBL"
+    Pdb{4,4}(si,:) = 10*log10(max(P_sbl(:).',1e-16));
 end
 
 % -------- Build UI --------
 fig = figure('Name','Interactive DOA GUI with SBL','NumberTitle','off');
 ax  = axes('Parent',fig); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 ax.XLim = [theta_grid(1),theta_grid(end)];
-xlabel(ax,'Angle (deg)'); ylabel(ax,'Power (dB)');
+xlabel(ax,'Angle (deg)');
+ylabel(ax,'Normalized Power (0–1)');  % default since normalize=true
 for dIdx=1:D, xline(ax,true_DOAs(dIdx),'r--','Ground Truth'); end
 
 snr_idx=1;
 ln=gobjects(num_cov,num_doa);
 for ci=1:num_cov
     for di=1:num_doa
-        ln(ci,di)=plot(ax,theta_grid,Pdb{ci,di}(snr_idx,:),...
+        ln(ci,di)=plot(ax,theta_grid,minMaxNorm(Pdb{ci,di}(snr_idx,:)),...
             'LineWidth',2,'DisplayName',[doa_names{di} ' (' cov_names{ci} ')']);
     end
 end
@@ -106,6 +107,8 @@ ttl=title(ax,sprintf('Spectra @ SNR = %d dB',snr_list(snr_idx)));
 state.Pdb=Pdb; state.theta_grid=theta_grid; state.snr_list=snr_list;
 state.lines=ln; state.title=ttl;
 state.sel_cov=true(1,num_cov); state.sel_doa=true(1,num_doa);
+state.normalize=true; % default normalize ON
+state.ax=ax;
 setappdata(fig,'state',state);
 
 % Covariance panel
@@ -126,6 +129,13 @@ for di=1:num_doa
         'Value',1,'Callback',@(src,~) toggleDOA(di,src));
 end
 
+% Options panel (Normalization)
+panel3=uipanel('Parent',fig,'Units','normalized','Position',[0.82 0.92 0.16 0.07],...
+    'Title','Options','FontSize',10);
+uicontrol('Parent',panel3,'Style','checkbox','Units','normalized',...
+    'Position',[0.05 0.1 0.9 0.8],'String','Min-Max Normalize',...
+    'Value',1,'Callback',@(src,~) toggleNorm(src));
+
 % SNR slider
 uicontrol('Style','text','Units','normalized',...
     'Position',[0.15 0.02 0.15 0.045],'String','SNR (dB):','FontSize',11);
@@ -142,6 +152,12 @@ uicontrol('Style','slider','Units','normalized','Position',[0.30 0.02 0.50 0.045
         st=getappdata(fig,'state'); st.sel_doa(di)=logical(get(src,'Value'));
         setappdata(fig,'state',st); updateVis();
     end
+    function toggleNorm(src)
+        st=getappdata(fig,'state'); 
+        st.normalize=logical(get(src,'Value'));
+        setappdata(fig,'state',st);
+        onSlide(findobj(fig,'Style','slider')); % force refresh
+    end
     function updateVis()
         st=getappdata(fig,'state');
         for ci=1:num_cov, for di=1:num_doa
@@ -153,9 +169,21 @@ uicontrol('Style','slider','Units','normalized','Position',[0.30 0.02 0.50 0.045
         st=getappdata(fig,'state');
         idx=max(1,min(numel(st.snr_list),round(get(src,'Value'))));
         for ci=1:num_cov, for di=1:num_doa
-            set(st.lines(ci,di),'YData',st.Pdb{ci,di}(idx,:));
+            Y=st.Pdb{ci,di}(idx,:);
+            if st.normalize, Y=minMaxNorm(Y); end
+            set(st.lines(ci,di),'YData',Y);
         end, end
+        % update title and Y label
         set(st.title,'String',sprintf('Spectra @ SNR = %d dB',st.snr_list(idx)));
+        if st.normalize
+            ylabel(st.ax,'Normalized Power (0–1)');
+        else
+            ylabel(st.ax,'Power (dB)');
+        end
         drawnow;
     end
+end
+
+function normalized_p = minMaxNorm(P)
+    normalized_p = (P-min(P)) / (max(P)-min(P));
 end

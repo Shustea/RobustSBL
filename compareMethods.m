@@ -15,7 +15,7 @@
 clear; close all; clc;
 
 %% Array & signal parameters
-M   = 12;              % # sensors
+M   = 20;              % # sensors
 fc  = 4e3;             % Center frequency (narrowband)
 c   = 343;             % Speed of sound [m/s] (or use EM wave c for RF)
 lmb = c / fc;          % Wavelength
@@ -74,9 +74,13 @@ P_music_scm = music_doa_estimation(A, R_scm, D);
 P_music_tyl = music_doa_estimation(A, R_tyl, D);
 P_music_t   = music_doa_estimation(A, R_t,   D);
 
-%% ---------------- RMSE Analysis (with robust MVDR/MUSIC) ---------------- %%
-NmonteCarlo = 100;   % number of random trials
-snr_list    = -15:25;  % SNR sweep [dB]
+%% ---------------- RMSE Analysis (Multi-Scenario: D × Noise) ---------------- %%
+Nsnapshot   = 25;               % number of snapshots
+NmonteCarlo = 100;                    % number of random trials
+LSnapshot = Nsnapshot * NmonteCarlo; % Number of array data vector observations "Large"
+snr_list    = -6:3:36;               % SNR sweep [dB]
+D_list      = [1 2 3];                 % number of sources
+noise_type  = {'Gaussian','tStudent','EpsCont'};
 
 rmse_results = struct();
 rmse_results.methods = { ...
@@ -84,116 +88,159 @@ rmse_results.methods = { ...
     'MVDR-SCM','MVDR-Huber','MVDR-tStudent','MVDR-Tyler', ...
     'MUSIC-SCM','MUSIC-Huber','MUSIC-tStudent','MUSIC-Tyler', ...
     'SBL-G','SBL-T','SBL-H','SBL-Tyl'};
-rmse_results.snr     = snr_list;
-rmse_results.rmse    = zeros(numel(rmse_results.methods), numel(snr_list));
+rmse_results.snr = snr_list;
+rmse_results.rmse = zeros(numel(rmse_results.methods), ...
+                          numel(snr_list), ...
+                          numel(D_list), ...
+                          numel(noise_type));
 
-degRes        = theta_grid(2) - theta_grid(1);
-errorDOAsepP  = max(1, floor(5/degRes) - 1);
-errorDOApeak  = D;
 
-hWait = waitbar(0, 'Starting RMSE Analysis...'); % Initialize progress bar
+% Params for epsilon-contaminated noise
+eps_out   = 0.1;   % fraction of outliers
+sigma_out = 10;    % outlier scale
 
-for isnr = 1:numel(snr_list)
-    SNR = snr_list(isnr);
-    all_err = zeros(numel(rmse_results.methods), NmonteCarlo);
+% Peak selection params
+degRes       = theta_grid(2) - theta_grid(1);
+errorDOAsepP = max(1, floor(5/degRes) - 1);
+DOApeak      = max(D_list) + 2;
+errCut       = 10; % max RMSE cutoff in degrees
 
-    for mc = 1:NmonteCarlo
-        % --- regenerate data ---
-        S = (randn(D, K) + 1j*randn(D, K)) / sqrt(2);
-        S = S .* db2mag(SNR);
-        W = (randn(M, K) + 1j*randn(M, K)) / sqrt(2);
-        nu_t = 2.1; 
-        w_t = sqrt(nu_t ./ chi2rnd(nu_t, 1, K));
-        W = W .* w_t;
-        X = A_true * S + W;
+speakerDOAs = {42, [-25, 60], [-10, 25, 78]};
 
-        % Covariance estimates
-        R_scm = scm_scatter(X);
-        R_h   = huber_scatter(X, 0.9);
-        R_t   = t_student_scatter(X, 2.1);
-        R_tyl = tyler_scatter(X);
+hWait = waitbar(0,'Starting RMSE Analysis...');
 
-        % ----- DOA -----
-        doa_cbf    = pickDOA(bartlett_doa_estimation(A, R_scm), theta_grid, D);
+for id = 1:numel(D_list)
+    D = D_list(id);
+    for itype = 1:numel(noise_type)
+        for isnr = 1:numel(snr_list)
+            SNR = snr_list(isnr);
+            all_err = zeros(numel(rmse_results.methods), NmonteCarlo);
 
-        doa_mvdr_s = pickDOA(mvdr_doa_estimation(A, R_scm),  theta_grid, D);
-        doa_mvdr_h = pickDOA(mvdr_doa_estimation(A, R_h),    theta_grid, D);
-        doa_mvdr_t = pickDOA(mvdr_doa_estimation(A, R_t),    theta_grid, D);
-        doa_mvdr_ty= pickDOA(mvdr_doa_estimation(A, R_tyl),  theta_grid, D);
-        
-        doa_music_s  = pickDOA(music_doa_estimation(A, R_scm, D),  theta_grid, D);
-        doa_music_h  = pickDOA(music_doa_estimation(A, R_h, D),    theta_grid, D);
-        doa_music_t  = pickDOA(music_doa_estimation(A, R_t, D),    theta_grid, D);
-        doa_music_ty = pickDOA(music_doa_estimation(A, R_tyl, D),  theta_grid, D);
+            for mc = 1:NmonteCarlo
+                % --- ground truth DOAs ---
+                true_DOAs = speakerDOAs{D};
+                A_true    = createSteeringMatrix(M, d, lmb, deg2rad(true_DOAs));
 
-        % ----- Robust SBL -----
-        opts = SBLSet;
-        opts.Nsource = D;
-        opts.activeIndices = 1; opts.activeIndRepN = 10;
-        opts.convergence.min_iteration = opts.activeIndRepN;
+                % --- source generation (stochastic, unit variance) ---
+                S = (randn(D,K) + 1j*randn(D,K)) / sqrt(2);
+                signal = A_true * S;
 
-        [indG,~]  = SBL_v5p12(A, X, 'SBL-G', inf, opts, errorDOApeak, errorDOAsepP);
-        [indT,~]  = SBL_v5p12(A, X, 'SBL-T', 2.1, opts, errorDOApeak, errorDOAsepP);
-        [indH,~]  = SBL_v5p12(A, X, 'SBL-H', 0.9, opts, errorDOApeak, errorDOAsepP);
-        [indTy,~] = SBL_v5p12(A, X, 'SBL-Tyl', M, opts, errorDOApeak, errorDOAsepP);
+                % --- noise sigma from ASNR ---
+                signal_power = norm(signal,'fro')^2 / (M*K);
+                target_asnr  = 10^(SNR/10);
+                sigma = sqrt(signal_power / target_asnr);
 
-        doa_g  = sort(theta_grid(indG));
-        doa_t  = sort(theta_grid(indT));
-        doa_h  = sort(theta_grid(indH));
-        doa_ty = sort(theta_grid(indTy));
+                % --- noise generation ---
+                switch noise_type{itype}
+                    case 'Gaussian'
+                        W = sigma * (randn(M,K)+1j*randn(M,K))/sqrt(2);
 
-        % ----- Errors -----
-        err_cbf     = mean(sqrt((doa_cbf    - true_DOAs).^2));
+                    case 'tStudent'
+                        nu_t = 2.1;
+                        W = sigma * (randn(M,K)+1j*randn(M,K))/sqrt(2);
+                        s = chi2rnd(nu_t,1,K);
+                        W = W ./ sqrt(s/nu_t);
 
-        err_mvdr_s  = mean(sqrt((doa_mvdr_s - true_DOAs).^2));
-        err_mvdr_h  = mean(sqrt((doa_mvdr_h - true_DOAs).^2));
-        err_mvdr_t  = mean(sqrt((doa_mvdr_t - true_DOAs).^2));
-        err_mvdr_ty = mean(sqrt((doa_mvdr_ty- true_DOAs).^2));
+                    case 'EpsCont'
+                        W = sigma * (randn(M,K)+1j*randn(M,K))/sqrt(2);
+                        mask = rand(M,K) < eps_out;
+                        scale = ones(M,K);
+                        scale(mask) = sigma_out;
+                        W = W .* scale;
+                end
 
-        err_music_s  = mean(sqrt((doa_music_s - true_DOAs).^2));
-        err_music_h  = mean(sqrt((doa_music_h - true_DOAs).^2));
-        err_music_t  = mean(sqrt((doa_music_t - true_DOAs).^2));
-        err_music_ty = mean(sqrt((doa_music_ty- true_DOAs).^2));
+                % --- mixture ---
+                X = signal + W;
 
-        err_g   = mean(sqrt((doa_g - true_DOAs).^2));
-        err_t   = mean(sqrt((doa_t  - true_DOAs).^2));
-        err_h   = mean(sqrt((doa_h  - true_DOAs).^2));
-        err_ty  = mean(sqrt((doa_ty - true_DOAs).^2));
+                % --- covariance estimates ---
+                R_scm = scm_scatter(X);
+                R_h   = huber_scatter(X,0.9);
+                R_t   = t_student_scatter(X,2.1);
+                R_tyl = tyler_scatter(X);
 
-        all_err(:,mc) = [ ...
-            err_cbf; ...
-            err_mvdr_s; err_mvdr_h; err_mvdr_t; err_mvdr_ty; ...
-            err_music_s; err_music_h; err_music_t; err_music_ty; ...
-            err_g; err_t; err_h; err_ty];
+                % --- DOA estimates ---
+                doa_cbf    = pickDOA(bartlett_doa_estimation(A,R_scm),theta_grid,D);
+
+                doa_mvdr_s = pickDOA(mvdr_doa_estimation(A,R_scm),theta_grid,D);
+                doa_mvdr_h = pickDOA(mvdr_doa_estimation(A,R_h),theta_grid,D);
+                doa_mvdr_t = pickDOA(mvdr_doa_estimation(A,R_t),theta_grid,D);
+                doa_mvdr_ty= pickDOA(mvdr_doa_estimation(A,R_tyl),theta_grid,D);
+
+                doa_music_s  = pickDOA(music_doa_estimation(A,R_scm,D),theta_grid,D);
+                doa_music_h  = pickDOA(music_doa_estimation(A,R_h,D),theta_grid,D);
+                doa_music_t  = pickDOA(music_doa_estimation(A,R_t,D),theta_grid,D);
+                doa_music_ty = pickDOA(music_doa_estimation(A,R_tyl,D),theta_grid,D);
+
+                % --- SBL ---
+                opts = SBLSet; opts.Nsource = D;
+                opts.activeIndices = 1; opts.activeIndRepN = 10;
+                opts.convergence.min_iteration = opts.activeIndRepN;
+
+                [indG,~]  = SBL_v5p12(A,X,'SBL-G',inf,opts,DOApeak,errorDOAsepP);
+                [indT,~]  = SBL_v5p12(A,X,'SBL-T',2.1,opts,DOApeak,errorDOAsepP);
+                [indH,~]  = SBL_v5p12(A,X,'SBL-H',0.9,opts,DOApeak,errorDOAsepP);
+                [indTy,~] = SBL_v5p12(A,X,'SBL-Tyl',M,opts,DOApeak,errorDOAsepP);
+
+                doa_g  = sort(theta_grid(indG));
+                doa_t  = sort(theta_grid(indT));
+                doa_h  = sort(theta_grid(indH));
+                doa_ty = sort(theta_grid(indTy));
+
+                all_err(:,mc) = [ ...
+                    rms(errorDOAcutoff(doa_cbf,    true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_mvdr_s, true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_mvdr_h, true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_mvdr_t, true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_mvdr_ty,true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_music_s,true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_music_h,true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_music_t,true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_music_ty,true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_g,true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_t,true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_h,true_DOAs,errCut)); ...
+                    rms(errorDOAcutoff(doa_ty,true_DOAs,errCut))];
+                
+            end
+
+            rmse_results.rmse(:,isnr,id,itype) = sqrt(mean(all_err.^2,2));
+
+            waitbar( ...
+                (((id-1)*numel(noise_type)+(itype-1))*numel(snr_list) + isnr) ...
+                / (numel(D_list)*numel(noise_type)*numel(snr_list)), ...
+                hWait, sprintf('SNR=%d, D=%d, Noise=%s', SNR, D, noise_type{itype}));
+        end
     end
-
-    % Monte Carlo average
-    rmse_results.rmse(:,isnr) = mean(all_err,2);
-    
-    waitbar(isnr/numel(snr_list), hWait, sprintf('Processing SNR = %d dB', SNR)); % Update progress bar
 end
+close(hWait);
 
-close(hWait); % Close progress bar
 
+% ---------------- Plot Results ---------------- %
 figure;
-hold on;
-colors = jet(numel(rmse_results.methods));
+nRows = numel(D_list);
+nCols = numel(noise_type);
+colors = lines(numel(rmse_results.methods));
 
-for m = 1:numel(rmse_results.methods)
-    semilogy(rmse_results.snr, rmse_results.rmse(m,:), 'o-', ...
-        'LineWidth', 2, 'Color', colors(m,:));
-    % Add labels to each plot
-    text(rmse_results.snr(1), rmse_results.rmse(m,1), rmse_results.methods{m}, ...
-        'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'right', 'FontSize', 10);
+for id = 1:nRows
+    for itype = 1:nCols
+        subplot(nRows,nCols,(id-1)*nCols + itype); hold on; grid on;
+        for m = 1:numel(rmse_results.methods)
+            semilogy(rmse_results.snr, ...
+                squeeze(rmse_results.rmse(m,:,id,itype)), ...
+                'LineWidth',1.5,'Color',colors(m,:));
+        end
+        xlabel('ASNR [dB]');
+        ylabel('RMSE [deg]');
+        title(sprintf('%d sources, %s noise',D_list(id),noise_type{itype}));
+        set(gca,'YScale','log'); % Set y-axis to logarithmic scale
+        if id==1 && itype==nCols
+            legend(rmse_results.methods,'Location','northeastoutside');
+        end
+    end
 end
+sgtitle('RMSE vs ASNR across #sources and noise models');
 
-xlabel('ASNR [dB]');
-ylabel('RMSE [deg]');
-title('RMSE vs ASNR (Monte Carlo Average)');
-legend(rmse_results.methods, 'Location','northeastoutside');
-grid on;
-set(gca, 'YScale', 'log'); % Set y-axis to logarithmic scale
-%% Plotting results
+%% output example
 
 % Calculate the mean and median power for each spectrum
 mean_power_cbf = mean(10*log10(P_cbf));
@@ -312,19 +359,19 @@ opts.convergence.min_iteration = opts.activeIndRepN;
 % Peak selection params matched to your grid resolution
 degRes        = theta_grid(2) - theta_grid(1);
 errorDOAsepP  = max(1, floor(5/degRes) - 1);
-errorDOApeak  = D + 2;
+DOApeak  = D + 2;
 
 % Gaussian SBL
-[gammaIndG, reportG] = SBL_v5p12(A, X, 'SBL-G', inf, opts, errorDOApeak, errorDOAsepP);
+[gammaIndG, reportG] = SBL_v5p12(A, X, 'SBL-G', inf, opts, DOApeak, errorDOAsepP);
 
 % Student-t SBL
-[gammaIndT, reportT] = SBL_v5p12(A, X, 'SBL-T', 2.1, opts, errorDOApeak, errorDOAsepP);
+[gammaIndT, reportT] = SBL_v5p12(A, X, 'SBL-T', 2.1, opts, DOApeak, errorDOAsepP);
 
 % Huber SBL
-[gammaIndH, reportH] = SBL_v5p12(A, X, 'SBL-H', 0.9, opts, errorDOApeak, errorDOAsepP);
+[gammaIndH, reportH] = SBL_v5p12(A, X, 'SBL-H', 0.9, opts, DOApeak, errorDOAsepP);
 
 % Tyler SBL
-[gammaIndTy, reportTy] = SBL_v5p12(A, X, 'SBL-Tyl', M, opts, errorDOApeak, errorDOAsepP);
+[gammaIndTy, reportTy] = SBL_v5p12(A, X, 'SBL-Tyl', M, opts, DOApeak, errorDOAsepP);
 
 % Plot SBL spectrum
 P_sblG  = reportG.results.final_iteration.gamma;
@@ -401,5 +448,6 @@ legend('MUSIC SBL Gaussian', 'MUSIC SBL t-Student', 'MUSIC SBL Huber', 'MUSIC SB
 grid on;
 hold off;
 
+%%
 snr_list = -21:3:21;
 interactive_gui(snr_list, true_DOAs, theta_grid, A, A_true, K, M)
